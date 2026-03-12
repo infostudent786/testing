@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>NEON RUNNER | Game 01</title>
+    <style>
+        body {
+            margin: 0;
+            background: #050505;
+            color: #fff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            touch-action: manipulation;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            pointer-events: none;
+        }
+        .score-text {
+            font-size: 24px;
+            font-weight: bold;
+            color: #00f2ff;
+            text-shadow: 0 0 10px #00f2ff;
+        }
+        #overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            background: rgba(0, 0, 0, 0.85);
+            padding: 40px;
+            border: 2px solid #00f2ff;
+            border-radius: 15px;
+            box-shadow: 0 0 20px #00f2ff;
+        }
+        button {
+            background: #00f2ff;
+            color: #000;
+            border: none;
+            padding: 15px 30px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 5px;
+            margin-top: 20px;
+            transition: 0.2s;
+        }
+        button:hover {
+            background: #fff;
+            box-shadow: 0 0 20px #fff;
+        }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="score-text">SCORE: <span id="score">0</span></div>
+        <div class="score-text" style="font-size: 14px; color: #ff00ea;">BEST: <span id="highScore">0</span></div>
+    </div>
+
+    <div id="overlay">
+        <h1 id="title" style="color: #00f2ff; margin: 0;">NEON RUNNER</h1>
+        <p id="msg">Jump over the red spikes!</p>
+        <button id="startBtn">START SYSTEM</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const highScoreEl = document.getElementById('highScore');
+        const startBtn = document.getElementById('startBtn');
+        const overlay = document.getElementById('overlay');
+
+        // Game Constants
+        let width, height, gravity, gameSpeed, score, highScore, isPlaying;
+        let particles = [];
+        let obstacles = [];
+        let frame = 0;
+        let shake = 0;
+
+        const player = {
+            x: 80,
+            y: 0,
+            w: 40,
+            h: 40,
+            dy: 0,
+            jumpForce: 15,
+            grounded: false,
+            color: '#00f2ff'
+        };
+
+        function init() {
+            width = window.innerWidth;
+            height = window.innerHeight;
+            canvas.width = width;
+            canvas.height = height;
+            gravity = 0.8;
+            gameSpeed = 6;
+            score = 0;
+            highScore = localStorage.getItem('neonRunnerBest') || 0;
+            highScoreEl.innerText = highScore;
+            player.y = height - 150;
+            obstacles = [];
+            particles = [];
+            isPlaying = false;
+        }
+
+        window.addEventListener('resize', init);
+        init();
+
+        function spawnObstacle() {
+            let size = Math.random() * (60 - 30) + 30;
+            obstacles.push({
+                x: width,
+                y: height - 100 - size,
+                w: size,
+                h: size,
+                color: '#ff0055'
+            });
+        }
+
+        function createParticles(x, y, color) {
+            for(let i=0; i<10; i++) {
+                particles.push({
+                    x, y,
+                    dx: (Math.random() - 0.5) * 10,
+                    dy: (Math.random() - 0.5) * 10,
+                    life: 1.0,
+                    color
+                });
+            }
+        }
+
+        function update() {
+            if (!isPlaying) return;
+
+            frame++;
+            if (frame % 70 === 0) spawnObstacle();
+            if (frame % 500 === 0) gameSpeed += 0.5; // Difficulty increase
+
+            // Player Physics
+            player.dy += gravity;
+            player.y += player.dy;
+
+            if (player.y + player.h > height - 100) {
+                player.y = height - 100 - player.h;
+                player.dy = 0;
+                player.grounded = true;
+            }
+
+            // Obstacle Logic
+            obstacles.forEach((obs, index) => {
+                obs.x -= gameSpeed;
+
+                // Collision Detection
+                if (
+                    player.x < obs.x + obs.w &&
+                    player.x + player.w > obs.x &&
+                    player.y < obs.y + obs.h &&
+                    player.y + player.h > obs.y
+                ) {
+                    gameOver();
+                }
+
+                if (obs.x + obs.w < 0) {
+                    obstacles.splice(index, 1);
+                    score += 10;
+                    scoreEl.innerText = score;
+                }
+            });
+
+            // Particle Physics
+            particles.forEach((p, i) => {
+                p.x += p.dx;
+                p.y += p.dy;
+                p.life -= 0.02;
+                if (p.life <= 0) particles.splice(i, 1);
+            });
+
+            if (shake > 0) shake--;
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, width, height);
+            
+            // Screenshake
+            if (shake > 0) ctx.translate(Math.random()*4-2, Math.random()*4-2);
+
+            // Floor
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 4;
+            ctx.beginPath();
+            ctx.moveTo(0, height - 100);
+            ctx.lineTo(width, height - 100);
+            ctx.stroke();
+
+            // Player Trail (simple)
+            ctx.shadowBlur = 15;
+            ctx.shadowColor = player.color;
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x, player.y, player.w, player.h);
+
+            // Obstacles
+            ctx.shadowColor = '#ff0055';
+            obstacles.forEach(obs => {
+                ctx.fillStyle = obs.color;
+                ctx.fillRect(obs.x, obs.y, obs.w, obs.h);
+            });
+
+            // Particles
+            particles.forEach(p => {
+                ctx.globalAlpha = p.life;
+                ctx.fillStyle = p.color;
+                ctx.fillRect(p.x, p.y, 4, 4);
+            });
+            ctx.globalAlpha = 1;
+            ctx.shadowBlur = 0;
+            
+            if (shake > 0) ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
+
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        function jump() {
+            if (player.grounded && isPlaying) {
+                player.dy = -player.jumpForce;
+                player.grounded = false;
+                createParticles(player.x + 20, player.y + 40, '#00f2ff');
+            }
+        }
+
+        function gameOver() {
+            isPlaying = false;
+            shake = 20;
+            createParticles(player.x, player.y, '#ff0055');
+            
+            if (score > highScore) {
+                localStorage.setItem('neonRunnerBest', score);
+                highScore = score;
+                highScoreEl.innerText = highScore;
+            }
+
+            overlay.classList.remove('hidden');
+            document.getElementById('title').innerText = "SYSTEM CRASHED";
+            document.getElementById('msg').innerText = "SCORE: " + score;
+            startBtn.innerText = "REBOOT SYSTEM";
+        }
+
+        startBtn.addEventListener('click', () => {
+            init();
+            isPlaying = true;
+            overlay.classList.add('hidden');
+        });
+
+        window.addEventListener('keydown', (e) => { if (e.code === 'Space') jump(); });
+        window.addEventListener('touchstart', jump);
+        window.addEventListener('mousedown', jump);
+
+        loop();
+    </script>
+</body>
+</html>
