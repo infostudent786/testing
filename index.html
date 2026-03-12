@@ -1,277 +1,802 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>NEON RUNNER | Game 01</title>
-    <style>
-        body {
-            margin: 0;
-            background: #050505;
-            color: #fff;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            overflow: hidden;
-            touch-action: manipulation;
-        }
-        canvas {
-            display: block;
-        }
-        #ui-layer {
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            pointer-events: none;
-        }
-        .score-text {
-            font-size: 24px;
-            font-weight: bold;
-            color: #00f2ff;
-            text-shadow: 0 0 10px #00f2ff;
-        }
-        #overlay {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            text-align: center;
-            background: rgba(0, 0, 0, 0.85);
-            padding: 40px;
-            border: 2px solid #00f2ff;
-            border-radius: 15px;
-            box-shadow: 0 0 20px #00f2ff;
-        }
-        button {
-            background: #00f2ff;
-            color: #000;
-            border: none;
-            padding: 15px 30px;
-            font-size: 18px;
-            font-weight: bold;
-            cursor: pointer;
-            border-radius: 5px;
-            margin-top: 20px;
-            transition: 0.2s;
-        }
-        button:hover {
-            background: #fff;
-            box-shadow: 0 0 20px #fff;
-        }
-        .hidden { display: none; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>NEON RUNNER</title>
+<style>
+  /* =============================================
+     GLOBAL STYLES & RESET
+  ============================================= */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #000;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+  }
+
+  /* Animated scanline effect behind the canvas */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,255,200,0.015) 2px,
+      rgba(0,255,200,0.015) 4px
+    );
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  canvas {
+    display: block;
+    /* Crisp pixel rendering for that retro feel */
+    image-rendering: pixelated;
+  }
+</style>
 </head>
 <body>
+<canvas id="gameCanvas"></canvas>
 
-    <div id="ui-layer">
-        <div class="score-text">SCORE: <span id="score">0</span></div>
-        <div class="score-text" style="font-size: 14px; color: #ff00ea;">BEST: <span id="highScore">0</span></div>
-    </div>
+<script>
+// ================================================================
+//  NEON RUNNER — Complete Single-File HTML5 Game
+//  Built with vanilla Canvas2D (no external dependencies)
+//
+//  Architecture:
+//    - GameState machine  (START → PLAYING → GAMEOVER)
+//    - Player            (physics, animation, trail)
+//    - ObstacleManager   (spawn, scroll, collision)
+//    - ParticleSystem    (score bursts, death explosion)
+//    - ScoreManager      (real-time score + localStorage high score)
+//    - ScreenShake       (camera trauma system)
+//    - Renderer          (layered draw calls each frame)
+// ================================================================
 
-    <div id="overlay">
-        <h1 id="title" style="color: #00f2ff; margin: 0;">NEON RUNNER</h1>
-        <p id="msg">Jump over the red spikes!</p>
-        <button id="startBtn">START SYSTEM</button>
-    </div>
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
 
-    <canvas id="gameCanvas"></canvas>
+// ── Responsive canvas sizing ─────────────────────────────────────
+const BASE_W = 800, BASE_H = 400;
+let scale = 1;
 
-    <script>
-        const canvas = document.getElementById('gameCanvas');
-        const ctx = canvas.getContext('2d');
-        const scoreEl = document.getElementById('score');
-        const highScoreEl = document.getElementById('highScore');
-        const startBtn = document.getElementById('startBtn');
-        const overlay = document.getElementById('overlay');
+function resizeCanvas() {
+  const ww = window.innerWidth, wh = window.innerHeight;
+  scale = Math.min(ww / BASE_W, wh / BASE_H);
+  canvas.width  = BASE_W;
+  canvas.height = BASE_H;
+  canvas.style.width  = BASE_W * scale + 'px';
+  canvas.style.height = BASE_H * scale + 'px';
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
 
-        // Game Constants
-        let width, height, gravity, gameSpeed, score, highScore, isPlaying;
-        let particles = [];
-        let obstacles = [];
-        let frame = 0;
-        let shake = 0;
+// ================================================================
+//  CONSTANTS
+// ================================================================
+const GROUND_Y      = BASE_H - 80;  // y-position of ground surface
+const GRAVITY       = 0.55;
+const JUMP_FORCE    = -13;
+const INIT_SPEED    = 5;
+const MAX_SPEED     = 18;
+const SPEED_INC     = 0.0012;       // speed ramp per frame
+const COLORS = {
+  bg:       '#050510',
+  ground:   '#0a0a2a',
+  neon1:    '#00ffe0',   // cyan
+  neon2:    '#ff00aa',   // magenta
+  neon3:    '#ffe000',   // yellow
+  white:    '#ffffff',
+  dimCyan:  'rgba(0,255,224,0.15)',
+  dimMag:   'rgba(255,0,170,0.15)',
+};
 
-        const player = {
-            x: 80,
-            y: 0,
-            w: 40,
-            h: 40,
-            dy: 0,
-            jumpForce: 15,
-            grounded: false,
-            color: '#00f2ff'
-        };
+// ================================================================
+//  GAME STATE
+// ================================================================
+let state = 'START';   // 'START' | 'PLAYING' | 'GAMEOVER'
+let frameCount  = 0;
+let gameSpeed   = INIT_SPEED;
+let score       = 0;
+let highScore   = parseInt(localStorage.getItem('neonRunnerHS') || '0');
+let deathTimer  = 0;   // freeze frames on death
+let bestRun     = false; // did player beat high score?
 
-        function init() {
-            width = window.innerWidth;
-            height = window.innerHeight;
-            canvas.width = width;
-            canvas.height = height;
-            gravity = 0.8;
-            gameSpeed = 6;
-            score = 0;
-            highScore = localStorage.getItem('neonRunnerBest') || 0;
-            highScoreEl.innerText = highScore;
-            player.y = height - 150;
-            obstacles = [];
-            particles = [];
-            isPlaying = false;
-        }
+// ================================================================
+//  INPUT (unified keyboard + touch/mouse)
+// ================================================================
+const input = { jumpPressed: false };
 
-        window.addEventListener('resize', init);
-        init();
+function triggerJump() {
+  if (state === 'START')    { startGame(); return; }
+  if (state === 'GAMEOVER') { restartGame(); return; }
+  if (state === 'PLAYING')  { player.jump(); }
+}
 
-        function spawnObstacle() {
-            let size = Math.random() * (60 - 30) + 30;
-            obstacles.push({
-                x: width,
-                y: height - 100 - size,
-                w: size,
-                h: size,
-                color: '#ff0055'
-            });
-        }
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp') {
+    e.preventDefault();
+    triggerJump();
+  }
+});
+canvas.addEventListener('pointerdown', e => { e.preventDefault(); triggerJump(); });
 
-        function createParticles(x, y, color) {
-            for(let i=0; i<10; i++) {
-                particles.push({
-                    x, y,
-                    dx: (Math.random() - 0.5) * 10,
-                    dy: (Math.random() - 0.5) * 10,
-                    life: 1.0,
-                    color
-                });
-            }
-        }
+// ================================================================
+//  SCREEN SHAKE (trauma-based camera system)
+// ================================================================
+const shake = {
+  trauma: 0,            // 0–1, decays each frame
+  maxOffset: 12,
+  x: 0, y: 0,
 
-        function update() {
-            if (!isPlaying) return;
+  add(amount) { this.trauma = Math.min(1, this.trauma + amount); },
 
-            frame++;
-            if (frame % 70 === 0) spawnObstacle();
-            if (frame % 500 === 0) gameSpeed += 0.5; // Difficulty increase
+  update() {
+    this.trauma = Math.max(0, this.trauma - 0.04);
+    const s = this.trauma * this.trauma;  // squared for snappier feel
+    this.x = (Math.random() * 2 - 1) * this.maxOffset * s;
+    this.y = (Math.random() * 2 - 1) * this.maxOffset * s;
+  }
+};
 
-            // Player Physics
-            player.dy += gravity;
-            player.y += player.dy;
+// ================================================================
+//  PARTICLE SYSTEM
+// ================================================================
+const particles = [];
 
-            if (player.y + player.h > height - 100) {
-                player.y = height - 100 - player.h;
-                player.dy = 0;
-                player.grounded = true;
-            }
+function spawnParticles(x, y, color, count, speed, life) {
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const spd   = (Math.random() * 0.6 + 0.4) * speed;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * spd,
+      vy: Math.sin(angle) * spd - Math.random() * 2,
+      life: life || (30 + Math.random() * 20),
+      maxLife: life || 50,
+      color,
+      size: 2 + Math.random() * 3,
+    });
+  }
+}
 
-            // Obstacle Logic
-            obstacles.forEach((obs, index) => {
-                obs.x -= gameSpeed;
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x  += p.vx;
+    p.y  += p.vy;
+    p.vy += 0.12;   // mini gravity
+    p.vx *= 0.97;
+    p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
 
-                // Collision Detection
-                if (
-                    player.x < obs.x + obs.w &&
-                    player.x + player.w > obs.x &&
-                    player.y < obs.y + obs.h &&
-                    player.y + player.h > obs.y
-                ) {
-                    gameOver();
-                }
+function drawParticles() {
+  particles.forEach(p => {
+    const alpha = p.life / p.maxLife;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur  = 8;
+    ctx.fillStyle   = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * alpha, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
+}
 
-                if (obs.x + obs.w < 0) {
-                    obstacles.splice(index, 1);
-                    score += 10;
-                    scoreEl.innerText = score;
-                }
-            });
+// ================================================================
+//  PLAYER
+// ================================================================
+const player = {
+  x: 120, y: GROUND_Y,
+  w: 30,  h: 30,
+  vy: 0,
+  onGround: true,
+  jumpCount: 0,          // allows double-jump
+  maxJumps: 2,
+  dead: false,
+  trail: [],             // ghost trail positions
 
-            // Particle Physics
-            particles.forEach((p, i) => {
-                p.x += p.dx;
-                p.y += p.dy;
-                p.life -= 0.02;
-                if (p.life <= 0) particles.splice(i, 1);
-            });
+  reset() {
+    this.y = GROUND_Y;
+    this.vy = 0;
+    this.onGround = true;
+    this.jumpCount = 0;
+    this.dead = false;
+    this.trail = [];
+  },
 
-            if (shake > 0) shake--;
-        }
+  jump() {
+    if (this.dead) return;
+    if (this.jumpCount < this.maxJumps) {
+      this.vy = JUMP_FORCE;
+      this.onGround = false;
+      this.jumpCount++;
+      // Small burst when jumping
+      spawnParticles(
+        this.x + this.w / 2, this.y + this.h,
+        COLORS.neon1, 6, 3, 20
+      );
+    }
+  },
 
-        function draw() {
-            ctx.clearRect(0, 0, width, height);
-            
-            // Screenshake
-            if (shake > 0) ctx.translate(Math.random()*4-2, Math.random()*4-2);
+  update() {
+    if (this.dead) return;
 
-            // Floor
-            ctx.strokeStyle = '#333';
-            ctx.lineWidth = 4;
-            ctx.beginPath();
-            ctx.moveTo(0, height - 100);
-            ctx.lineTo(width, height - 100);
-            ctx.stroke();
+    // Physics
+    this.vy += GRAVITY;
+    this.y  += this.vy;
 
-            // Player Trail (simple)
-            ctx.shadowBlur = 15;
-            ctx.shadowColor = player.color;
-            ctx.fillStyle = player.color;
-            ctx.fillRect(player.x, player.y, player.w, player.h);
+    // Ground collision
+    if (this.y >= GROUND_Y) {
+      this.y       = GROUND_Y;
+      this.vy      = 0;
+      this.onGround = true;
+      this.jumpCount = 0;
+    }
 
-            // Obstacles
-            ctx.shadowColor = '#ff0055';
-            obstacles.forEach(obs => {
-                ctx.fillStyle = obs.color;
-                ctx.fillRect(obs.x, obs.y, obs.w, obs.h);
-            });
+    // Store trail (last 8 positions)
+    this.trail.unshift({ x: this.x, y: this.y });
+    if (this.trail.length > 8) this.trail.pop();
+  },
 
-            // Particles
-            particles.forEach(p => {
-                ctx.globalAlpha = p.life;
-                ctx.fillStyle = p.color;
-                ctx.fillRect(p.x, p.y, 4, 4);
-            });
-            ctx.globalAlpha = 1;
-            ctx.shadowBlur = 0;
-            
-            if (shake > 0) ctx.setTransform(1, 0, 0, 1, 0, 0);
-        }
+  die() {
+    if (this.dead) return;
+    this.dead = true;
+    shake.add(0.7);
+    deathTimer = 20;  // freeze frames
+    spawnParticles(
+      this.x + this.w / 2, this.y + this.h / 2,
+      COLORS.neon2, 30, 6, 50
+    );
+    spawnParticles(
+      this.x + this.w / 2, this.y + this.h / 2,
+      COLORS.white, 15, 4, 35
+    );
+  },
 
-        function loop() {
-            update();
-            draw();
-            requestAnimationFrame(loop);
-        }
+  draw() {
+    // Draw ghost trail
+    this.trail.forEach((pos, i) => {
+      const alpha = (1 - i / this.trail.length) * 0.25;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = COLORS.neon1;
+      ctx.shadowColor = COLORS.neon1;
+      ctx.shadowBlur  = 10;
+      // Slightly smaller trail squares
+      const shrink = i * 1.5;
+      ctx.fillRect(
+        pos.x + shrink / 2,
+        pos.y + shrink / 2,
+        this.w - shrink,
+        this.h - shrink
+      );
+      ctx.restore();
+    });
 
-        function jump() {
-            if (player.grounded && isPlaying) {
-                player.dy = -player.jumpForce;
-                player.grounded = false;
-                createParticles(player.x + 20, player.y + 40, '#00f2ff');
-            }
-        }
+    if (this.dead) return;
 
-        function gameOver() {
-            isPlaying = false;
-            shake = 20;
-            createParticles(player.x, player.y, '#ff0055');
-            
-            if (score > highScore) {
-                localStorage.setItem('neonRunnerBest', score);
-                highScore = score;
-                highScoreEl.innerText = highScore;
-            }
+    ctx.save();
+    // Outer glow
+    ctx.shadowColor = COLORS.neon1;
+    ctx.shadowBlur  = 20;
+    ctx.strokeStyle = COLORS.neon1;
+    ctx.lineWidth   = 2;
+    ctx.strokeRect(this.x, this.y, this.w, this.h);
 
-            overlay.classList.remove('hidden');
-            document.getElementById('title').innerText = "SYSTEM CRASHED";
-            document.getElementById('msg').innerText = "SCORE: " + score;
-            startBtn.innerText = "REBOOT SYSTEM";
-        }
+    // Inner fill
+    ctx.shadowBlur  = 5;
+    ctx.fillStyle   = 'rgba(0,255,224,0.15)';
+    ctx.fillRect(this.x, this.y, this.w, this.h);
 
-        startBtn.addEventListener('click', () => {
-            init();
-            isPlaying = true;
-            overlay.classList.add('hidden');
-        });
+    // Animated inner diamond (pulse)
+    const pulse = Math.sin(frameCount * 0.12) * 3;
+    ctx.shadowBlur  = 12 + pulse;
+    ctx.strokeStyle = COLORS.white;
+    ctx.lineWidth   = 1.5;
+    const cx = this.x + this.w / 2, cy = this.y + this.h / 2;
+    const d  = 7 + pulse;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - d);
+    ctx.lineTo(cx + d, cy);
+    ctx.lineTo(cx, cy + d);
+    ctx.lineTo(cx - d, cy);
+    ctx.closePath();
+    ctx.stroke();
 
-        window.addEventListener('keydown', (e) => { if (e.code === 'Space') jump(); });
-        window.addEventListener('touchstart', jump);
-        window.addEventListener('mousedown', jump);
+    ctx.restore();
+  }
+};
 
-        loop();
-    </script>
+// ================================================================
+//  OBSTACLES
+// ================================================================
+const obstacles = [];
+
+// Obstacle templates: { w, h, color, shape }
+const obstacleTypes = [
+  { w: 22, h: 40, color: COLORS.neon2,  shape: 'rect'     },
+  { w: 22, h: 60, color: COLORS.neon3,  shape: 'rect'     },
+  { w: 40, h: 25, color: COLORS.neon2,  shape: 'low-wide' },
+  { w: 15, h: 80, color: COLORS.neon1,  shape: 'tall'     },
+];
+
+let nextObstacleFrame = 90;  // frames until next spawn
+
+function spawnObstacle() {
+  const type = obstacleTypes[Math.floor(Math.random() * obstacleTypes.length)];
+  obstacles.push({
+    x: BASE_W + 20,
+    y: GROUND_Y + player.h - type.h,  // sits on ground
+    w: type.w,
+    h: type.h,
+    color: type.color,
+    scored: false,
+  });
+
+  // Dynamic spawn interval: faster game = tighter gap
+  const minGap = Math.max(45, 90 - score * 0.3);
+  const maxGap = Math.max(80, 150 - score * 0.5);
+  nextObstacleFrame = frameCount + minGap + Math.random() * (maxGap - minGap);
+}
+
+function updateObstacles() {
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    const o = obstacles[i];
+    o.x -= gameSpeed;
+
+    // Score when obstacle passes player
+    if (!o.scored && o.x + o.w < player.x) {
+      o.scored = true;
+      score++;
+      // Particle burst at player position when scoring
+      spawnParticles(
+        player.x + player.w / 2,
+        player.y - 10,
+        COLORS.neon3, 8, 4, 25
+      );
+      // Small shake for feedback
+      shake.add(0.05);
+    }
+
+    // Collision detection (AABB with slight shrink for fairness)
+    const shrink = 4;
+    if (!player.dead &&
+        player.x + shrink           < o.x + o.w &&
+        player.x + player.w - shrink > o.x       &&
+        player.y + shrink           < o.y + o.h  &&
+        player.y + player.h - shrink > o.y) {
+      player.die();
+      endGame();
+    }
+
+    // Remove off-screen
+    if (o.x + o.w < -20) obstacles.splice(i, 1);
+  }
+
+  // Spawn new obstacle
+  if (frameCount >= nextObstacleFrame) spawnObstacle();
+}
+
+function drawObstacles() {
+  obstacles.forEach(o => {
+    ctx.save();
+    ctx.shadowColor = o.color;
+    ctx.shadowBlur  = 15;
+    ctx.strokeStyle = o.color;
+    ctx.lineWidth   = 2;
+    ctx.strokeRect(o.x, o.y, o.w, o.h);
+    ctx.fillStyle   = o.color + '22';  // semi-transparent fill
+    ctx.fillRect(o.x, o.y, o.w, o.h);
+
+    // Decorative inner line
+    ctx.shadowBlur  = 5;
+    ctx.lineWidth   = 1;
+    ctx.strokeRect(o.x + 4, o.y + 4, o.w - 8, o.h - 8);
+    ctx.restore();
+  });
+}
+
+// ================================================================
+//  BACKGROUND — Parallax grid layers
+// ================================================================
+const bgLayers = [
+  { speed: 0.2, color: 'rgba(0,255,224,0.04)', size: 80,  offset: 0 },
+  { speed: 0.5, color: 'rgba(0,255,224,0.07)', size: 40,  offset: 0 },
+];
+const stars = Array.from({ length: 60 }, () => ({
+  x: Math.random() * BASE_W,
+  y: Math.random() * (GROUND_Y - 40),
+  r: Math.random() * 1.5,
+  speed: 0.3 + Math.random() * 0.7,
+  alpha: 0.2 + Math.random() * 0.6,
+}));
+
+function drawBackground() {
+  // Sky
+  ctx.fillStyle = COLORS.bg;
+  ctx.fillRect(0, 0, BASE_W, BASE_H);
+
+  // Stars (parallax)
+  if (state === 'PLAYING') {
+    stars.forEach(s => {
+      s.x -= s.speed * (gameSpeed / INIT_SPEED);
+      if (s.x < 0) s.x = BASE_W;
+    });
+  }
+  stars.forEach(s => {
+    ctx.save();
+    ctx.globalAlpha = s.alpha;
+    ctx.fillStyle = COLORS.white;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  });
+
+  // Parallax grid
+  bgLayers.forEach(layer => {
+    if (state === 'PLAYING') layer.offset = (layer.offset + layer.speed * gameSpeed / INIT_SPEED) % layer.size;
+    ctx.save();
+    ctx.strokeStyle = layer.color;
+    ctx.lineWidth   = 1;
+    ctx.beginPath();
+    // Vertical lines
+    for (let x = -layer.offset; x < BASE_W + layer.size; x += layer.size) {
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, GROUND_Y);
+    }
+    // Horizontal lines
+    for (let y = 0; y < GROUND_Y; y += layer.size) {
+      ctx.moveTo(0, y);
+      ctx.lineTo(BASE_W, y);
+    }
+    ctx.stroke();
+    ctx.restore();
+  });
+
+  // Ground
+  ctx.save();
+  ctx.fillStyle = COLORS.ground;
+  ctx.fillRect(0, GROUND_Y + player.h, BASE_W, BASE_H - GROUND_Y - player.h);
+
+  // Ground glow line
+  ctx.shadowColor = COLORS.neon1;
+  ctx.shadowBlur  = 12;
+  ctx.strokeStyle = COLORS.neon1;
+  ctx.lineWidth   = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, GROUND_Y + player.h);
+  ctx.lineTo(BASE_W, GROUND_Y + player.h);
+  ctx.stroke();
+
+  // Ground grid (receding perspective lines)
+  ctx.strokeStyle = 'rgba(0,255,224,0.08)';
+  ctx.lineWidth   = 1;
+  ctx.shadowBlur  = 0;
+  const gTop  = GROUND_Y + player.h;
+  const gBot  = BASE_H;
+  const gOff  = (state === 'PLAYING') ? (bgLayers[1].offset * 2) % 40 : 0;
+  for (let x = -gOff; x < BASE_W + 40; x += 40) {
+    ctx.beginPath();
+    ctx.moveTo(x, gTop);
+    ctx.lineTo(BASE_W / 2 + (x - BASE_W / 2) * 0.3, gBot);
+    ctx.stroke();
+  }
+  for (let prog = 0; prog <= 1; prog += 0.15) {
+    const y = gTop + (gBot - gTop) * prog;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(BASE_W, y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ================================================================
+//  HUD — Score & Speed
+// ================================================================
+function drawHUD() {
+  if (state !== 'PLAYING') return;
+
+  ctx.save();
+
+  // Score
+  ctx.font        = 'bold 28px "Courier New"';
+  ctx.shadowColor = COLORS.neon1;
+  ctx.shadowBlur  = 12;
+  ctx.fillStyle   = COLORS.neon1;
+  ctx.textAlign   = 'right';
+  ctx.fillText(String(score).padStart(4, '0'), BASE_W - 20, 40);
+
+  // "SCORE" label
+  ctx.font      = '11px "Courier New"';
+  ctx.shadowBlur = 6;
+  ctx.fillStyle = 'rgba(0,255,224,0.5)';
+  ctx.fillText('SCORE', BASE_W - 20, 55);
+
+  // High score
+  ctx.shadowColor = COLORS.neon2;
+  ctx.shadowBlur  = 8;
+  ctx.fillStyle   = COLORS.neon2;
+  ctx.fillText('HI ' + String(highScore).padStart(4, '0'), BASE_W - 20, 80);
+
+  // Speed bar (bottom left)
+  const barW = 120, barH = 6, barX = 20, barY = BASE_H - 20;
+  const speedPct = (gameSpeed - INIT_SPEED) / (MAX_SPEED - INIT_SPEED);
+  ctx.textAlign   = 'left';
+  ctx.font        = '10px "Courier New"';
+  ctx.shadowColor = COLORS.neon3;
+  ctx.shadowBlur  = 6;
+  ctx.fillStyle   = 'rgba(255,224,0,0.5)';
+  ctx.fillText('SPEED', barX, barY - 9);
+  ctx.strokeStyle = 'rgba(255,224,0,0.2)';
+  ctx.lineWidth   = 1;
+  ctx.strokeRect(barX, barY, barW, barH);
+  const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+  grad.addColorStop(0, COLORS.neon1);
+  grad.addColorStop(1, COLORS.neon3);
+  ctx.fillStyle = grad;
+  ctx.shadowBlur = 10;
+  ctx.fillRect(barX, barY, barW * speedPct, barH);
+
+  // Double-jump hint (show when in air and jump still available)
+  if (!player.onGround && player.jumpCount < player.maxJumps) {
+    ctx.globalAlpha = 0.5 + 0.5 * Math.abs(Math.sin(frameCount * 0.1));
+    ctx.shadowColor = COLORS.neon3;
+    ctx.shadowBlur  = 10;
+    ctx.fillStyle   = COLORS.neon3;
+    ctx.font        = '11px "Courier New"';
+    ctx.textAlign   = 'center';
+    ctx.fillText('DOUBLE JUMP!', BASE_W / 2, 25);
+  }
+
+  ctx.restore();
+}
+
+// ================================================================
+//  START SCREEN
+// ================================================================
+let startPulse = 0;
+
+function drawStartScreen() {
+  startPulse += 0.04;
+
+  ctx.save();
+
+  // Animated title
+  const titleGlow = 15 + Math.sin(startPulse) * 8;
+  ctx.textAlign   = 'center';
+  ctx.shadowColor = COLORS.neon1;
+  ctx.shadowBlur  = titleGlow;
+  ctx.fillStyle   = COLORS.neon1;
+  ctx.font        = 'bold 64px "Courier New"';
+  ctx.fillText('NEON', BASE_W / 2, BASE_H / 2 - 70);
+
+  ctx.shadowColor = COLORS.neon2;
+  ctx.shadowBlur  = titleGlow;
+  ctx.fillStyle   = COLORS.neon2;
+  ctx.fillText('RUNNER', BASE_W / 2, BASE_H / 2 - 10);
+
+  // Subtitle
+  ctx.shadowBlur  = 6;
+  ctx.fillStyle   = 'rgba(255,255,255,0.5)';
+  ctx.font        = '13px "Courier New"';
+  ctx.fillText('SIDE-SCROLLING SURVIVAL — DOUBLE JUMP ENABLED', BASE_W / 2, BASE_H / 2 + 25);
+
+  // Blinking Play prompt
+  const blink = Math.floor(startPulse * 2) % 2;
+  if (blink === 0) {
+    ctx.shadowColor = COLORS.neon3;
+    ctx.shadowBlur  = 14;
+    ctx.fillStyle   = COLORS.neon3;
+    ctx.font        = 'bold 18px "Courier New"';
+    ctx.fillText('[ SPACE / TAP TO PLAY ]', BASE_W / 2, BASE_H / 2 + 70);
+  }
+
+  // High score
+  if (highScore > 0) {
+    ctx.shadowColor = COLORS.neon2;
+    ctx.shadowBlur  = 8;
+    ctx.fillStyle   = COLORS.neon2;
+    ctx.font        = '14px "Courier New"';
+    ctx.fillText('BEST: ' + highScore, BASE_W / 2, BASE_H / 2 + 100);
+  }
+
+  // Controls hint
+  ctx.shadowBlur  = 4;
+  ctx.fillStyle   = 'rgba(255,255,255,0.25)';
+  ctx.font        = '11px "Courier New"';
+  ctx.fillText('SPACE / ↑ / TAP = JUMP   DOUBLE-JUMP FOR EXTRA HEIGHT', BASE_W / 2, BASE_H - 25);
+
+  ctx.restore();
+}
+
+// ================================================================
+//  GAME OVER SCREEN
+// ================================================================
+let goTimer   = 0;  // fade-in timer
+let goLetters = []; // letter-drop animation
+
+function initGameOverScreen() {
+  goTimer   = 0;
+  goLetters = 'GAME OVER'.split('').map((ch, i) => ({
+    ch,
+    x: BASE_W / 2 + (i - 4.5) * 42,
+    y: -50 - i * 15,
+    vy: 0,
+    landed: false,
+    targetY: BASE_H / 2 - 80,
+    color: i < 4 ? COLORS.neon2 : COLORS.neon1,
+  }));
+}
+
+function updateGameOverLetters() {
+  goLetters.forEach(l => {
+    if (l.landed) return;
+    l.vy += 0.9;
+    l.y  += l.vy;
+    if (l.y >= l.targetY) {
+      l.y     = l.targetY;
+      l.vy    = -l.vy * 0.35;
+      if (Math.abs(l.vy) < 1) { l.vy = 0; l.landed = true; }
+      shake.add(0.08);
+    }
+  });
+}
+
+function drawGameOverScreen() {
+  goTimer++;
+  updateGameOverLetters();
+
+  ctx.save();
+
+  // Overlay dim
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, BASE_W, BASE_H);
+
+  // Falling letters
+  goLetters.forEach(l => {
+    ctx.textAlign   = 'center';
+    ctx.font        = 'bold 48px "Courier New"';
+    ctx.shadowColor = l.color;
+    ctx.shadowBlur  = 20;
+    ctx.fillStyle   = l.color;
+    ctx.fillText(l.ch === ' ' ? '' : l.ch, l.x, l.y);
+  });
+
+  if (goTimer > 40) {
+    const alpha = Math.min(1, (goTimer - 40) / 30);
+    ctx.globalAlpha = alpha;
+
+    // Final score
+    ctx.textAlign   = 'center';
+    ctx.shadowColor = COLORS.neon3;
+    ctx.shadowBlur  = 12;
+    ctx.fillStyle   = COLORS.neon3;
+    ctx.font        = 'bold 36px "Courier New"';
+    ctx.fillText('SCORE  ' + String(score).padStart(4, '0'), BASE_W / 2, BASE_H / 2 - 10);
+
+    // New high score flash
+    if (bestRun) {
+      const flash = Math.floor(goTimer / 8) % 2;
+      ctx.shadowColor = COLORS.neon1;
+      ctx.shadowBlur  = 20;
+      ctx.fillStyle   = flash ? COLORS.neon1 : COLORS.white;
+      ctx.font        = 'bold 18px "Courier New"';
+      ctx.fillText('✦  NEW BEST  ✦', BASE_W / 2, BASE_H / 2 + 25);
+    } else {
+      ctx.shadowColor = COLORS.neon2;
+      ctx.shadowBlur  = 8;
+      ctx.fillStyle   = 'rgba(255,0,170,0.7)';
+      ctx.font        = '14px "Courier New"';
+      ctx.fillText('BEST: ' + highScore, BASE_W / 2, BASE_H / 2 + 25);
+    }
+
+    // Restart prompt (blink)
+    if (goTimer > 80) {
+      const blink = Math.floor(goTimer / 20) % 2;
+      if (blink === 0) {
+        ctx.shadowColor = COLORS.neon3;
+        ctx.shadowBlur  = 14;
+        ctx.fillStyle   = COLORS.neon3;
+        ctx.font        = 'bold 16px "Courier New"';
+        ctx.fillText('[ SPACE / TAP TO RETRY ]', BASE_W / 2, BASE_H / 2 + 65);
+      }
+    }
+  }
+
+  ctx.restore();
+}
+
+// ================================================================
+//  GAME LIFECYCLE
+// ================================================================
+function startGame() {
+  state      = 'PLAYING';
+  score      = 0;
+  frameCount = 0;
+  gameSpeed  = INIT_SPEED;
+  obstacles.length   = 0;
+  particles.length   = 0;
+  nextObstacleFrame  = 90;
+  player.reset();
+  shake.trauma = 0;
+}
+
+function endGame() {
+  state = 'GAMEOVER';
+  bestRun = score > highScore;
+  if (bestRun) {
+    highScore = score;
+    localStorage.setItem('neonRunnerHS', highScore);
+  }
+  initGameOverScreen();
+}
+
+function restartGame() {
+  // Only allow restart after the "landed letters" animation finishes
+  if (goTimer > 80) startGame();
+}
+
+// ================================================================
+//  MAIN LOOP
+// ================================================================
+function update() {
+  if (state !== 'PLAYING') return;
+
+  frameCount++;
+
+  // Ramp speed (capped)
+  gameSpeed = Math.min(MAX_SPEED, INIT_SPEED + frameCount * SPEED_INC);
+
+  player.update();
+  updateObstacles();
+  updateParticles();
+  shake.update();
+}
+
+function render() {
+  ctx.save();
+
+  // Apply screen shake transform
+  ctx.translate(shake.x, shake.y);
+
+  drawBackground();
+
+  if (state === 'START') {
+    drawStartScreen();
+  } else {
+    drawObstacles();
+    player.draw();
+    drawParticles();
+    drawHUD();
+    if (state === 'GAMEOVER') drawGameOverScreen();
+  }
+
+  ctx.restore();
+}
+
+function loop() {
+  update();
+  render();
+  requestAnimationFrame(loop);
+}
+
+// ── Kick it off ─────────────────────────────────────────────────
+loop();
+</script>
 </body>
 </html>
